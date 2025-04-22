@@ -1,0 +1,16 @@
+CMakeLists.txt.user
+.vscode/settings.json
+
+# build
+build/*
+build_release/*
+
+# editors
+.vscode/*
+.vs/*
+
+# extern
+extern/*
+!extern/CMakeLists.txt
+
+lib/

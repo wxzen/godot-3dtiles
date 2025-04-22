@@ -6,9 +6,7 @@
 
 ## Status
 
-This project was initiated as my first attempt to learn Godot engine source code and Cesium-native code. It has successfully achieved the loading of 3D Tiles from both local disk paths and HTTP server URLs. However, there are still some bugs that need to be addressed. I will continue to update and improve it when I have free time.
-
-Development on this specific project is currently paused. Battle Road, Inc. has received an official Cesium Ecosystem Grant to develop a Cesium plugin for Godot. Given their expertise and the official support for their effort, it is recommended to follow their progress. If you are eager to see continued development in this space, you may explore this project and contribute. Contributions from the community are highly encouraged to help perfect this plugin.
+This project was initiated as my first attempt to learn Godot engine source code and Cesium-native code. It has successfully achieved the loading of 3D Tiles from both local disk paths and HTTP server URLs. However, there are still some bugs that need to be addressed. Development on this specific project is currently paused. Battle Road, Inc. has received an official Cesium Ecosystem Grant to develop a Cesium plugin for Godot. Given their expertise and the official support for their effort, it is recommended to follow their progress. If you are eager to see continued development in this space, you may explore this project and contribute. Contributions from the community are highly encouraged to help perfect this plugin.
 
 ---
 

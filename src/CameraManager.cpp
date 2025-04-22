@@ -26,7 +26,8 @@ namespace CesiumForGodot
     namespace
     {
 
-        ViewState godotCameraToViewState( const LocalHorizontalCoordinateSystem *pCoordinateSystem,
+        ViewState godotCameraToViewState( const CesiumGeoreference *georeference,
+                                          const LocalHorizontalCoordinateSystem *pCoordinateSystem,
                                           const glm::dmat4 &godotWorldToTileset,
                                           const godot::Camera3D *camera,
                                           const godot::Size2 viewportSize )
@@ -59,9 +60,13 @@ namespace CesiumForGodot
             double height = viewportSize.height;
             double horizontalFOV = 2 * glm::atan( width / height * glm::tan( verticalFOV * 0.5 ) );
 
+            const CesiumGeospatial::Ellipsoid &ellipsoid =
+                georeference != nullptr ? georeference->get_ellipsoid()->get_native_ellipsoid()
+                                        : CesiumGeospatial::Ellipsoid::WGS84;
+
             return ViewState::create( cameraPosition, glm::normalize( cameraDirection ),
                                       glm::normalize( cameraUp ), glm::dvec2( width, height ),
-                                      horizontalFOV, verticalFOV );
+                                      horizontalFOV, verticalFOV, ellipsoid );
         }
 
         glm::dmat4 godotTransform3DToGlm( godot::Transform3D transform )
@@ -98,9 +103,10 @@ namespace CesiumForGodot
         glm::dmat4 godotWorldToTileset = godotTransform3DToGlm( tileset.get_transform() );
 
         Node *parent = tileset.get_parent();
+        CesiumGeoreference *georeference = nullptr;
         if ( parent )
         {
-            CesiumGeoreference *georeference = Object::cast_to<CesiumGeoreference>( parent );
+            georeference = Object::cast_to<CesiumGeoreference>( parent );
             if ( georeference )
             {
                 const LocalHorizontalCoordinateSystem coordinateSystem =
@@ -126,8 +132,9 @@ namespace CesiumForGodot
             godot::Size2 viewportSize = viewport->get_visible_rect().size;
             if ( viewportSize.width > 50 && viewportSize.height > 50 )
             {
-                result.emplace_back( godotCameraToViewState( pCoordinateSystem, godotWorldToTileset,
-                                                             currentCamera, viewportSize ) );
+                result.emplace_back( godotCameraToViewState( georeference, pCoordinateSystem,
+                                                             godotWorldToTileset, currentCamera,
+                                                             viewportSize ) );
             }
         }
 
@@ -151,9 +158,9 @@ namespace CesiumForGodot
                         godot::Size2 viewportSize = editor_viewport->get_visible_rect().size;
                         if ( viewportSize.width > 50 && viewportSize.height > 50 )
                         {
-                            result.emplace_back(
-                                godotCameraToViewState( pCoordinateSystem, godotWorldToTileset,
-                                                        editor_camera, viewportSize ) );
+                            result.emplace_back( godotCameraToViewState(
+                                georeference, pCoordinateSystem, godotWorldToTileset, editor_camera,
+                                viewportSize ) );
                         }
                     }
                 }

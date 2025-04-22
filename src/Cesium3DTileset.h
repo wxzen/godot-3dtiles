@@ -7,16 +7,31 @@
 #include <godot_cpp/core/binder_common.hpp>
 #include <godot_cpp/variant/typed_array.hpp>
 
-#include "CesiumGeoreference.h"
 #include <Cesium3DTilesSelection/Tileset.h>
 #include <Cesium3DTilesSelection/TilesetExternals.h>
 #include <Cesium3DTilesSelection/ViewUpdateResult.h>
 #include <CesiumGeospatial/LocalHorizontalCoordinateSystem.h>
 
+#include "CesiumGeoreference.h"
+#include "CesiumImageryProvider.h"
+
 using namespace godot;
 
 namespace CesiumForGodot
 {
+    enum TilesetSource
+    {
+        /**
+         * The tileset will be loaded from the specified Url.
+         */
+        FromUrl,
+
+        /**
+         * The tileset will be loaded from the georeference ellipsoid.
+         */
+        FromEllipsoid
+    };
+
     /**
      * @class Cesium3DTileset
      * @brief 3D Tileset loader and renderer for Cesium tilesets.
@@ -31,6 +46,7 @@ namespace CesiumForGodot
         std::unique_ptr<Cesium3DTilesSelection::Tileset> p_tileset;
         Cesium3DTilesSelection::ViewUpdateResult last_update_result;
 
+        TilesetSource tileset_source;
         String url;
         float maximum_screen_space_error;
         bool preload_ancestors;
@@ -46,13 +62,16 @@ namespace CesiumForGodot
         bool suspend_update;
         bool create_physics_meshes;
         bool generate_smooth_normals;
-        
 
         /* Whether to log details about the tile selection process. */
         bool log_selection_stats;
         int32_t last_opaque_material_hash;
         float load_progress;
         bool active_loading;
+
+        Ref<ImageryProvider> imagery_provider;
+
+        TypedArray<ImageryProvider> test_array;
 
         void destroy_tileset();
         void load_tileset();
@@ -61,15 +80,17 @@ namespace CesiumForGodot
         float compute_load_progress();
         void update_load_status();
         void update_tileset_options_from_properties();
+        void update_overlay_material_keys();
 
     protected:
         static void _bind_methods();
 
     public:
         Cesium3DTileset();
+
         virtual ~Cesium3DTileset();
 
-        void _notification( int p_what );
+        void _process( double delta ) override;
         void update( double delta );
 
         const CesiumGeoreference *resolve_georeference() const;
@@ -77,6 +98,12 @@ namespace CesiumForGodot
         void focus_tileset();
         Cesium3DTilesSelection::Tileset *get_tileset();
         const Cesium3DTilesSelection::Tileset *get_tileset() const;
+
+        void set_tileset_source( const TilesetSource );
+        TilesetSource get_tileset_source();
+
+        TypedArray<ImageryProvider> get_test_array();
+        void set_test_array( TypedArray<ImageryProvider> p_test_array );
 
         void set_url( const String p_url );
         String get_url() const;
@@ -112,9 +139,14 @@ namespace CesiumForGodot
         void set_generate_smooth_normals( const bool p_generate_smooth_normals );
         void set_log_selection_stats( const bool p_log_selection_stats );
         bool get_log_selection_stats() const;
-        bool tiles_destroyed;
+
+        Ref<ImageryProvider> get_imagery_provider() const;
+        void set_imagery_provider( const Ref<ImageryProvider> p_imagery_provider );
+        void destroy_imagery_provider();
     };
 
 } // namespace CesiumForGodot
+
+VARIANT_ENUM_CAST( CesiumForGodot::TilesetSource );
 
 #endif

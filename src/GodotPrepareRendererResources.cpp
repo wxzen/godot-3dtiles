@@ -1,7 +1,12 @@
 #include "GodotPrepareRendererResources.h"
 #include <CesiumGltf/AccessorView.h>
 #include <algorithm>
+#include <array>
+#include <unordered_map>
+#include <variant>
 
+#include <godot_cpp/classes/shader.hpp>
+#include <godot_cpp/classes/shader_material.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 
 using namespace CesiumForGodot;
@@ -49,14 +54,12 @@ int32_t countPrimitives( const CesiumGltf::Model &model )
     int32_t numberOfPrimitives = 0;
     model.forEachPrimitiveInScene(
         -1, [&numberOfPrimitives]( const CesiumGltf::Model &gltf, const CesiumGltf::Node &node,
-                                   const CesiumGltf::Mesh &mesh,
-                                   const CesiumGltf::MeshPrimitive &primitive,
+                                   const CesiumGltf::Mesh &mesh, const MeshPrimitive &primitive,
                                    const glm::dmat4 &transform ) { ++numberOfPrimitives; } );
     return numberOfPrimitives;
 }
 
-void generateMipMaps( CesiumGltf::Model *pModel,
-                      const std::optional<CesiumGltf::TextureInfo> &textureInfo )
+void generateMipMaps( CesiumGltf::Model *pModel, const std::optional<TextureInfo> &textureInfo )
 {
     if ( textureInfo )
     {
@@ -70,6 +73,15 @@ void generateMipMaps( CesiumGltf::Model *pModel,
                 CesiumGltf::Model::getSafe( &pModel->samplers, pTexture->sampler );
             if ( pImage && pSampler )
             {
+                // We currently do not support shared resources, so if this image is
+                // associated with a depot, unshare it. This is necessary to avoid a
+                // race condition where multiple threads attempt to generate mipmaps for
+                // the same shared image simultaneously.
+                if ( pImage->pAsset && pImage->pAsset->getDepot() )
+                {
+                    // Copy the asset.
+                    pImage->pAsset.emplace( *pImage->pAsset );
+                }
                 switch ( pSampler->minFilter.value_or(
                     CesiumGltf::Sampler::MinFilter::LINEAR_MIPMAP_LINEAR ) )
                 {
@@ -84,8 +96,7 @@ void generateMipMaps( CesiumGltf::Model *pModel,
     }
 }
 
-void generateMipMapsForPrimitive( CesiumGltf::Model *pModel,
-                                  const CesiumGltf::MeshPrimitive &primitive )
+void generateMipMapsForPrimitive( CesiumGltf::Model *pModel, const MeshPrimitive &primitive )
 {
     const CesiumGltf::Material *pMaterial =
         CesiumGltf::Model::getSafe( &pModel->materials, primitive.material );
@@ -140,120 +151,6 @@ bool validateVertexColors( const CesiumGltf::Model &model, uint32_t accessorId, 
 
     return true;
 }
-template <typename TIndex> struct CopyVertexColors
-{
-    uint8_t *pWritePos;
-    size_t stride;
-    size_t vertexCount;
-    bool duplicateVertices;
-    TIndex *indices;
-
-    struct Color32
-    {
-        uint8_t r;
-        uint8_t g;
-        uint8_t b;
-        uint8_t a;
-    };
-
-    bool operator()( AccessorView<nullptr_t> &&invalidView )
-    {
-        return false;
-    }
-
-    template <typename TColorView> bool operator()( TColorView &&colorView )
-    {
-        if ( colorView.status() != AccessorViewStatus::Valid )
-        {
-            return false;
-        }
-
-        bool success = true;
-        if ( duplicateVertices )
-        {
-            for ( size_t i = 0; success && i < vertexCount; ++i )
-            {
-                TIndex vertexIndex = indices[i];
-                if ( vertexIndex < 0 || vertexIndex >= colorView.size() )
-                {
-                    success = false;
-                }
-                else
-                {
-                    Color32 &packedColor = *reinterpret_cast<Color32 *>( pWritePos );
-                    success = CopyVertexColors::convertColor( colorView[vertexIndex], packedColor );
-                    pWritePos += stride;
-                }
-            }
-        }
-        else
-        {
-            for ( size_t i = 0; success && i < vertexCount; ++i )
-            {
-                if ( i >= static_cast<size_t>( colorView.size() ) )
-                {
-                    success = false;
-                }
-                else
-                {
-                    Color32 &packedColor = *reinterpret_cast<Color32 *>( pWritePos );
-                    success = CopyVertexColors::convertColor( colorView[i], packedColor );
-                    pWritePos += stride;
-                }
-            }
-        }
-
-        return success;
-    }
-
-    bool packColorChannel( uint8_t c, uint8_t &result )
-    {
-        result = c;
-        return true;
-    }
-
-    bool packColorChannel( uint16_t c, uint8_t &result )
-    {
-        result = static_cast<uint8_t>( c >> 8 );
-        return true;
-    }
-
-    bool packColorChannel( float c, uint8_t &result )
-    {
-        result = static_cast<uint8_t>( static_cast<uint32_t>( 255.0f * c ) & 255 );
-        return true;
-    }
-
-    template <typename T> bool packColorChannel( T c, uint8_t &result )
-    {
-        // Invalid accessor type.
-        return false;
-    }
-
-    template <typename TChannel>
-    bool convertColor( const AccessorTypes::VEC3<TChannel> &color, Color32 &result )
-    {
-        result.a = 255;
-        return packColorChannel( color.value[0], result.r ) &&
-               packColorChannel( color.value[1], result.g ) &&
-               packColorChannel( color.value[2], result.b );
-    }
-
-    template <typename TChannel>
-    bool convertColor( const AccessorTypes::VEC4<TChannel> &color, Color32 &result )
-    {
-        return packColorChannel( color.value[0], result.r ) &&
-               packColorChannel( color.value[1], result.g ) &&
-               packColorChannel( color.value[2], result.b ) &&
-               packColorChannel( color.value[3], result.a );
-    }
-
-    template <typename T> bool convertColor( T color, Color32 &result )
-    {
-        // Not an accessor
-        return false;
-    }
-};
 
 int32_t computeVertexDataSize( int32_t vertexCount, VertexAttributeDescriptor *attributes,
                                std::int32_t size )
@@ -430,7 +327,8 @@ static const CesiumGltf::MaterialPBRMetallicRoughness defaultPbrMetallicRoughnes
 void setGltfMaterialParameterValues( const CesiumGltf::Model &model,
                                      const CesiumPrimitiveInfo &primitiveInfo,
                                      const CesiumGltf::Material &gltfMaterial,
-                                     const Ref<StandardMaterial3D> material)
+                                     const Ref<StandardMaterial3D> material,
+                                     const TilesetMaterialProperties &materialProperties )
 {
 
     CESIUM_TRACE( "Cesium::CreateMaterials" );
@@ -586,6 +484,14 @@ void setGltfMaterialParameterValues( const CesiumGltf::Model &model,
             const glm::dvec2 &offset = textureTransform.offset();
             material->set_uv1_scale( Vector3( scale[0], scale[1], 0 ) );
             material->set_uv1_offset( Vector3( offset[0], offset[1], 0 ) );
+            // const glm::dvec2& rotationSineCosine =
+            //     textureTransform.rotationSineCosine();
+            // unityMaterial.SetVector(
+            //     materialProperties.getBaseColorTextureRotationID(),
+            //     { static_cast<float>(rotationSineCosine[0]),
+            //      static_cast<float>(rotationSineCosine[1]),
+            //      0.0f,
+            //      0.0f });
         }
     }
 
@@ -602,6 +508,14 @@ void setGltfMaterialParameterValues( const CesiumGltf::Model &model,
             const glm::dvec2 &offset = textureTransform.offset();
             material->set_uv1_scale( Vector3( scale[0], scale[1], 0 ) );
             material->set_uv1_offset( Vector3( offset[0], offset[1], 0 ) );
+            // const glm::dvec2& rotationSineCosine =
+            //     textureTransform.rotationSineCosine();
+            // unityMaterial.SetVector(
+            //     materialProperties.getMetallicRoughnessTextureRotationID(),
+            //     { static_cast<float>(rotationSineCosine[0]),
+            //      static_cast<float>(rotationSineCosine[1]),
+            //      0.0f,
+            //      0.0f });
         }
     }
 
@@ -618,6 +532,14 @@ void setGltfMaterialParameterValues( const CesiumGltf::Model &model,
             const glm::dvec2 &offset = textureTransform.offset();
             material->set_uv1_scale( Vector3( scale[0], scale[1], 0 ) );
             material->set_uv1_offset( Vector3( offset[0], offset[1], 0 ) );
+            // const glm::dvec2& rotationSineCosine =
+            //     textureTransform.rotationSineCosine();
+            // unityMaterial.SetVector(
+            //     materialProperties.getNormalMapTextureRotationID(),
+            //     { static_cast<float>(rotationSineCosine[0]),
+            //      static_cast<float>(rotationSineCosine[1]),
+            //      0.0f,
+            //      0.0f });
         }
     }
 
@@ -634,6 +556,14 @@ void setGltfMaterialParameterValues( const CesiumGltf::Model &model,
             const glm::dvec2 &offset = textureTransform.offset();
             material->set_uv1_scale( Vector3( scale[0], scale[1], 0 ) );
             material->set_uv1_offset( Vector3( offset[0], offset[1], 0 ) );
+            // const glm::dvec2& rotationSineCosine =
+            //     textureTransform.rotationSineCosine();
+            // unityMaterial.SetVector(
+            //     materialProperties.getEmissiveTextureRotationID(),
+            //     { static_cast<float>(rotationSineCosine[0]),
+            //      static_cast<float>(rotationSineCosine[1]),
+            //      0.0f,
+            //      0.0f });
         }
     }
 
@@ -651,6 +581,14 @@ void setGltfMaterialParameterValues( const CesiumGltf::Model &model,
             const glm::dvec2 &offset = textureTransform.offset();
             material->set_uv1_scale( Vector3( scale[0], scale[1], 0 ) );
             material->set_uv1_offset( Vector3( offset[0], offset[1], 0 ) );
+            // const glm::dvec2& rotationSineCosine =
+            //     textureTransform.rotationSineCosine();
+            // unityMaterial.SetVector(
+            //     materialProperties.getOcclusionTextureRotationID(),
+            //     { static_cast<float>(rotationSineCosine[0]),
+            //      static_cast<float>(rotationSineCosine[1]),
+            //      0.0f,
+            //      0.0f });
         }
     }
 }
@@ -711,7 +649,8 @@ void extractVertexData( const std::vector<uint8_t> &vertexData,
                     assert( desc.format == VertexAttributeFormat::Float32 && desc.dimension == 3 );
                     glm::vec3 pos;
                     std::memcpy( &pos, pVertex, sizeof( pos ) );
-                    positions[i] = pos;
+                    // positions[i] = glm::vec3(pos.x, pos.y, pos.z);
+                    positions[i] = glm::vec3(pos.x, pos.z, -pos.y);
                     pVertex += sizeof( pos );
                     break;
                 }
@@ -720,7 +659,7 @@ void extractVertexData( const std::vector<uint8_t> &vertexData,
                     assert( desc.format == VertexAttributeFormat::Float32 && desc.dimension == 3 );
                     glm::vec3 norm;
                     std::memcpy( &norm, pVertex, sizeof( norm ) );
-                    normals[i] = norm;
+                    normals[i] = glm::vec3(norm.x,  norm.z, -norm.y);
                     pVertex += sizeof( norm );
                     break;
                 }
@@ -749,6 +688,121 @@ void extractVertexData( const std::vector<uint8_t> &vertexData,
     }
 }
 
+template <typename TIndex> struct CopyVertexColors
+{
+    uint8_t *pWritePos;
+    size_t stride;
+    size_t vertexCount;
+    bool duplicateVertices;
+    TIndex *indices;
+
+    struct Color32
+    {
+        uint8_t r;
+        uint8_t g;
+        uint8_t b;
+        uint8_t a;
+    };
+
+    bool operator()( AccessorView<nullptr_t> &&invalidView )
+    {
+        return false;
+    }
+
+    template <typename TColorView> bool operator()( TColorView &&colorView )
+    {
+        if ( colorView.status() != AccessorViewStatus::Valid )
+        {
+            return false;
+        }
+
+        bool success = true;
+        if ( duplicateVertices )
+        {
+            for ( size_t i = 0; success && i < vertexCount; ++i )
+            {
+                TIndex vertexIndex = indices[i];
+                if ( vertexIndex < 0 || vertexIndex >= colorView.size() )
+                {
+                    success = false;
+                }
+                else
+                {
+                    Color32 &packedColor = *reinterpret_cast<Color32 *>( pWritePos );
+                    success = CopyVertexColors::convertColor( colorView[vertexIndex], packedColor );
+                    pWritePos += stride;
+                }
+            }
+        }
+        else
+        {
+            for ( size_t i = 0; success && i < vertexCount; ++i )
+            {
+                if ( i >= static_cast<size_t>( colorView.size() ) )
+                {
+                    success = false;
+                }
+                else
+                {
+                    Color32 &packedColor = *reinterpret_cast<Color32 *>( pWritePos );
+                    success = CopyVertexColors::convertColor( colorView[i], packedColor );
+                    pWritePos += stride;
+                }
+            }
+        }
+
+        return success;
+    }
+
+    bool packColorChannel( uint8_t c, uint8_t &result )
+    {
+        result = c;
+        return true;
+    }
+
+    bool packColorChannel( uint16_t c, uint8_t &result )
+    {
+        result = static_cast<uint8_t>( c >> 8 );
+        return true;
+    }
+
+    bool packColorChannel( float c, uint8_t &result )
+    {
+        result = static_cast<uint8_t>( static_cast<uint32_t>( 255.0f * c ) & 255 );
+        return true;
+    }
+
+    template <typename T> bool packColorChannel( T c, uint8_t &result )
+    {
+        // Invalid accessor type.
+        return false;
+    }
+
+    template <typename TChannel>
+    bool convertColor( const AccessorTypes::VEC3<TChannel> &color, Color32 &result )
+    {
+        result.a = 255;
+        return packColorChannel( color.value[0], result.r ) &&
+               packColorChannel( color.value[1], result.g ) &&
+               packColorChannel( color.value[2], result.b );
+    }
+
+    template <typename TChannel>
+    bool convertColor( const AccessorTypes::VEC4<TChannel> &color, Color32 &result )
+    {
+        return packColorChannel( color.value[0], result.r ) &&
+               packColorChannel( color.value[1], result.g ) &&
+               packColorChannel( color.value[2], result.b ) &&
+               packColorChannel( color.value[3], result.a );
+    }
+
+    template <typename T> bool convertColor( T color, Color32 &result )
+    {
+        // Not an accessor
+        return false;
+    }
+};
+
 template <typename TIndex, class TIndexAccessor>
 void loadPrimitive( Ref<ArrayMesh> arrMesh, CesiumPrimitiveInfo &primitiveInfo,
                     const CesiumGltf::Model &gltf, const CesiumGltf::Node &node,
@@ -756,7 +810,6 @@ void loadPrimitive( Ref<ArrayMesh> arrMesh, CesiumPrimitiveInfo &primitiveInfo,
                     const glm::dmat4 &transform, const TIndexAccessor &indicesView,
                     const IndexFormat indexFormat, const AccessorView<glm::vec3> &positionView )
 {
-
     CESIUM_TRACE( "Cesium::loadPrimitive<T>" );
     int32_t indexCount = 0;
     switch ( primitive.mode )
@@ -795,7 +848,6 @@ void loadPrimitive( Ref<ArrayMesh> arrMesh, CesiumPrimitiveInfo &primitiveInfo,
     else if ( !primitiveInfo.isUnlit && primitive.mode != MeshPrimitive::Mode::POINTS )
     {
         shouldComputeFlatNormals = hasNormals = true;
-        SPDLOG_INFO( "Invalid normal buffer. Flat normals will be auto-generated instead." );
     }
 
     // Check if  we need to upgrade to a large index type to accommodate the
@@ -839,13 +891,14 @@ void loadPrimitive( Ref<ArrayMesh> arrMesh, CesiumPrimitiveInfo &primitiveInfo,
             }
             break;
         case CesiumGltf::MeshPrimitive::Mode::TRIANGLE_FAN:
-        default:
             for ( int32_t i = 2; i < indicesView.size(); ++i )
             {
                 indicesData[3 * i] = indicesView[0];
                 indicesData[3 * i + 1] = indicesView[i - 1];
                 indicesData[3 * i + 2] = indicesView[i];
             }
+            break;
+        default:
             break;
     }
 
@@ -855,6 +908,7 @@ void loadPrimitive( Ref<ArrayMesh> arrMesh, CesiumPrimitiveInfo &primitiveInfo,
     // Interleave all attributes into single stream.
     int32_t numberOfAttributes = 0;
 
+    assert( numberOfAttributes < MAX_ATTRIBUTES );
     descriptors[numberOfAttributes].attribute = VertexAttribute::Position;
     descriptors[numberOfAttributes].format = VertexAttributeFormat::Float32;
     descriptors[numberOfAttributes].dimension = 3;
@@ -891,7 +945,6 @@ void loadPrimitive( Ref<ArrayMesh> arrMesh, CesiumPrimitiveInfo &primitiveInfo,
     if ( hasVertexColors )
     {
         assert( numberOfAttributes < MAX_ATTRIBUTES );
-
         descriptors[numberOfAttributes].attribute = VertexAttribute::Color;
         descriptors[numberOfAttributes].format = VertexAttributeFormat::UNorm8;
         descriptors[numberOfAttributes].dimension = 4;
@@ -984,6 +1037,7 @@ void loadPrimitive( Ref<ArrayMesh> arrMesh, CesiumPrimitiveInfo &primitiveInfo,
     // 2. normals (skip if N/A)
     // 3. vertex colors (skip if N/A)
     // 4. texcoords (first all TEXCOORD_i, then all _CESIUMOVERLAY_i)
+  
     size_t stride = sizeof( glm::vec3 );
     size_t normalByteOffset, colorByteOffset;
     if ( hasNormals )
@@ -1096,7 +1150,11 @@ void loadPrimitive( Ref<ArrayMesh> arrMesh, CesiumPrimitiveInfo &primitiveInfo,
     size_t i = 0;
     for ( glm::vec3 &vec3 : positions )
     {
-        verts_.set( i, Vector3( vec3.x, vec3.y, vec3.z ) );
+        Vector3 v = Vector3( vec3.x, vec3.y, vec3.z );
+        v.x = v.x / 1000; // test ellipsoid mesh rendering
+        v.y = v.y / 1000;
+        v.z = v.z / 1000;
+        verts_.set( i, v );
         ++i;
     }
 
@@ -1128,21 +1186,21 @@ void loadPrimitive( Ref<ArrayMesh> arrMesh, CesiumPrimitiveInfo &primitiveInfo,
     arrMesh->add_surface_from_arrays( ArrayMesh::PRIMITIVE_TRIANGLES, surface_array );
 }
 
-void populateMeshDataArray( std::vector<Ref<ArrayMesh>> &aMeshes,
+void populateMeshDataArray( std::vector<Ref<ArrayMesh>> &arrayMeshes,
                             std::vector<CesiumPrimitiveInfo> &primitiveInfos,
                             CesiumGltf::Model *pModel )
 {
     int32_t numberOfPrimitives = countPrimitives( *pModel );
-    aMeshes.reserve( numberOfPrimitives );
+    arrayMeshes.reserve( numberOfPrimitives );
     primitiveInfos.reserve( numberOfPrimitives );
 
     pModel->forEachPrimitiveInScene(
-        pModel->scene, [&aMeshes, &primitiveInfos, pModel](
+        pModel->scene, [&arrayMeshes, &primitiveInfos, pModel](
                            const CesiumGltf::Model &gltf, const CesiumGltf::Node &node,
                            const CesiumGltf::Mesh &mesh, const CesiumGltf::MeshPrimitive &primitive,
                            const glm::dmat4 &transform ) {
-            Ref<ArrayMesh> &aMesh = aMeshes.emplace_back();
-            aMesh.instantiate();
+            Ref<ArrayMesh> &arrayMesh = arrayMeshes.emplace_back();
+            arrayMesh.instantiate();
             CesiumPrimitiveInfo &primitiveInfo = primitiveInfos.emplace_back();
             auto positionAccessorIt = primitive.attributes.find( "POSITION" );
             if ( positionAccessorIt == primitive.attributes.end() )
@@ -1163,15 +1221,15 @@ void populateMeshDataArray( std::vector<Ref<ArrayMesh>> &aMeshes,
                 int32_t indexCount = static_cast<int32_t>( positionView.size() );
                 if ( indexCount > std::numeric_limits<std::uint16_t>::max() )
                 {
-                    loadPrimitive<std::uint32_t>( aMesh, primitiveInfo, gltf, node, mesh, primitive,
-                                                  transform,
+                    loadPrimitive<std::uint32_t>( arrayMesh, primitiveInfo, gltf, node, mesh,
+                                                  primitive, transform,
                                                   generateIndices<std::uint32_t>( indexCount ),
                                                   IndexFormat::UInt32, positionView );
                 }
                 else
                 {
-                    loadPrimitive<std::uint16_t>( aMesh, primitiveInfo, gltf, node, mesh, primitive,
-                                                  transform,
+                    loadPrimitive<std::uint16_t>( arrayMesh, primitiveInfo, gltf, node, mesh,
+                                                  primitive, transform,
                                                   generateIndices<std::uint16_t>( indexCount ),
                                                   IndexFormat::UInt16, positionView );
                 }
@@ -1184,7 +1242,7 @@ void populateMeshDataArray( std::vector<Ref<ArrayMesh>> &aMeshes,
                     case Accessor::ComponentType::BYTE:
                     {
                         AccessorView<int8_t> indexAccessor( gltf, primitive.indices );
-                        loadPrimitive<std::uint16_t>( aMesh, primitiveInfo, gltf, node, mesh,
+                        loadPrimitive<std::uint16_t>( arrayMesh, primitiveInfo, gltf, node, mesh,
                                                       primitive, transform, indexAccessor,
                                                       IndexFormat::UInt16, positionView );
                         break;
@@ -1192,7 +1250,7 @@ void populateMeshDataArray( std::vector<Ref<ArrayMesh>> &aMeshes,
                     case Accessor::ComponentType::UNSIGNED_BYTE:
                     {
                         AccessorView<uint8_t> indexAccessor( gltf, primitive.indices );
-                        loadPrimitive<std::uint16_t>( aMesh, primitiveInfo, gltf, node, mesh,
+                        loadPrimitive<std::uint16_t>( arrayMesh, primitiveInfo, gltf, node, mesh,
                                                       primitive, transform, indexAccessor,
                                                       IndexFormat::UInt16, positionView );
                         break;
@@ -1200,7 +1258,7 @@ void populateMeshDataArray( std::vector<Ref<ArrayMesh>> &aMeshes,
                     case Accessor::ComponentType::SHORT:
                     {
                         AccessorView<int16_t> indexAccessor( gltf, primitive.indices );
-                        loadPrimitive<std::uint16_t>( aMesh, primitiveInfo, gltf, node, mesh,
+                        loadPrimitive<std::uint16_t>( arrayMesh, primitiveInfo, gltf, node, mesh,
                                                       primitive, transform, indexAccessor,
                                                       IndexFormat::UInt16, positionView );
                         break;
@@ -1208,7 +1266,7 @@ void populateMeshDataArray( std::vector<Ref<ArrayMesh>> &aMeshes,
                     case Accessor::ComponentType::UNSIGNED_SHORT:
                     {
                         AccessorView<uint16_t> indexAccessor( gltf, primitive.indices );
-                        loadPrimitive<std::uint16_t>( aMesh, primitiveInfo, gltf, node, mesh,
+                        loadPrimitive<std::uint16_t>( arrayMesh, primitiveInfo, gltf, node, mesh,
                                                       primitive, transform, indexAccessor,
                                                       IndexFormat::UInt16, positionView );
                         break;
@@ -1216,7 +1274,7 @@ void populateMeshDataArray( std::vector<Ref<ArrayMesh>> &aMeshes,
                     case Accessor::ComponentType::UNSIGNED_INT:
                     {
                         AccessorView<uint32_t> indexAccessor( gltf, primitive.indices );
-                        loadPrimitive<std::uint32_t>( aMesh, primitiveInfo, gltf, node, mesh,
+                        loadPrimitive<std::uint32_t>( arrayMesh, primitiveInfo, gltf, node, mesh,
                                                       primitive, transform, indexAccessor,
                                                       IndexFormat::UInt32, positionView );
                         break;
@@ -1294,11 +1352,6 @@ void *GodotPrepareRendererResources::prepareInMainThread( Cesium3DTilesSelection
         MeshInstance3D *meshInstance = memnew( MeshInstance3D );
         meshInstance->set_name( godot::String( name.c_str() ) );
         meshInstance->set_mesh( meshes[i] );
-        // cesium coordinate axis X is not align godot's, need rotate.
-        Quaternion qua( Vector3( 1, 0, 0 ), static_cast<real_t>( -Math_PI / 2 ) );
-        Transform3D trans;
-        trans.set_basis( qua );
-        meshInstance->set_transform( trans );
         meshInstance->set_visible( false );
         this->_tileset->add_child( meshInstance );
         meshInstances.push_back( meshInstance );
@@ -1308,12 +1361,13 @@ void *GodotPrepareRendererResources::prepareInMainThread( Cesium3DTilesSelection
 
     int32_t meshIndex = 0;
     model.forEachPrimitiveInScene(
-        model.scene, [&meshes, &meshIndex, &meshInstances, &primitiveInfos, &createPhysicsMeshes, model](
+        model.scene, [&meshes, &meshIndex, &meshInstances, &primitiveInfos, model,
+                      &materialProperties = this->_materialProperties](
                          const CesiumGltf::Model &gltf, const CesiumGltf::Node &node,
                          const CesiumGltf::Mesh &mesh, const CesiumGltf::MeshPrimitive &primitive,
                          const glm::dmat4 &transform ) {
             const CesiumPrimitiveInfo &primitiveInfo = primitiveInfos[meshIndex];
-            Ref<ArrayMesh> ArrayMeshRef = meshes[meshIndex];
+            const Ref<ArrayMesh> arrayMesh = meshes[meshIndex];
             MeshInstance3D *meshInstance = meshInstances[meshIndex];
             meshIndex++;
             auto positionAccessorIt = primitive.attributes.find( "POSITION" );
@@ -1337,26 +1391,10 @@ void *GodotPrepareRendererResources::prepareInMainThread( Cesium3DTilesSelection
                 Model::getSafe( &gltf.materials, primitive.material );
             if ( pMaterial )
             {
-                setGltfMaterialParameterValues( gltf, primitiveInfo, *pMaterial, material);
+                setGltfMaterialParameterValues( gltf, primitiveInfo, *pMaterial, material,
+                                                materialProperties );
             }
             meshInstance->set_material_override( material );
-
-            if ( primitiveInfo.containsPoints )
-            {
-                // TODO: pointClound
-
-                return;
-            }
-
-            if ( createPhysicsMeshes )
-            {
-                if ( !godot::Engine::get_singleton()->is_editor_hint() &&
-                     !isDegenerateTriangleMesh( ArrayMeshRef ) )
-                {
-
-                    meshInstance->create_convex_collision();
-                }
-            }
         } );
 
     return new CesiumGltfNode{ std::move( meshInstances ),
@@ -1367,11 +1405,6 @@ void GodotPrepareRendererResources::free( Cesium3DTilesSelection::Tile &tile,
                                           void *pLoadThreadResult,
                                           void *pMainThreadResult ) noexcept
 {
-    if (this->_tileset->tiles_destroyed)
-    {
-        return;
-    }
-    SPDLOG_INFO("prepare to free resources");
     if ( pLoadThreadResult )
     {
         LoadThreadResult *result = static_cast<LoadThreadResult *>( pLoadThreadResult );
@@ -1380,47 +1413,54 @@ void GodotPrepareRendererResources::free( Cesium3DTilesSelection::Tile &tile,
     }
     if ( pMainThreadResult )
     {
-        CesiumGltfNode *pGltfNode = static_cast<CesiumGltfNode *>( pMainThreadResult );
-        if (!pGltfNode->isFreed)
+        CesiumGltfNode *pCesiumGltfNode = static_cast<CesiumGltfNode *>( pMainThreadResult );
+        for ( MeshInstance3D *meshInstance : pCesiumGltfNode->pNodes )
         {
-            for ( MeshInstance3D *meshInstance : pGltfNode->pNodes )
+            if ( meshInstance->get_parent() )
             {
-                if (meshInstance && meshInstance->is_inside_tree())
-                {
-                    godot::Node *parent = meshInstance->get_parent();
-                    if (parent)
-                    {
-                        parent->remove_child(meshInstance);
-                    }
-                    // 由Godot负责内存释放，避免手动delete
-                    meshInstance->queue_free();
-                }
+                meshInstance->get_parent()->remove_child( meshInstance );
             }
-            pGltfNode->pNodes.clear();
-            pGltfNode->isFreed = true;
-            delete pGltfNode;
-        } else{
-            SPDLOG_WARN("pGltfNode: {} already freed!", (void*)pGltfNode);
         }
+        pCesiumGltfNode->pNodes.clear();
+        delete pCesiumGltfNode;
     }
 }
 
 void *GodotPrepareRendererResources::prepareRasterInLoadThread( CesiumGltf::ImageAsset &image,
                                                                 const std::any &rendererOptions )
 {
+    CesiumGltfReader::ImageDecoder::generateMipMaps( image );
     return nullptr;
 }
+
+struct GodotTextureWrapper
+{
+    Ref<ImageTexture> texture;
+    GodotTextureWrapper( Ref<ImageTexture> tex ) : texture( tex )
+    {
+    }
+};
 
 void *GodotPrepareRendererResources::prepareRasterInMainThread(
     CesiumRasterOverlays::RasterOverlayTile &rasterTile, void *pLoadThreadResult )
 {
-    return nullptr;
+    Ref<godot::Image> image = loadImageFromCesiumImage( *rasterTile.getImage(), true );
+    Ref<ImageTexture> texture = ImageTexture::create_from_image( image );
+    return new GodotTextureWrapper( texture );
 }
 
 void GodotPrepareRendererResources::freeRaster(
     const CesiumRasterOverlays::RasterOverlayTile &rasterTile, void *pLoadThreadResult,
     void *pMainThreadResult ) noexcept
 {
+    if ( pMainThreadResult )
+    {
+        std::unique_ptr<ImageTexture> pTexture( static_cast<ImageTexture *>( pMainThreadResult ) );
+        if ( pTexture )
+        {
+            pTexture.reset();
+        }
+    }
 }
 
 void GodotPrepareRendererResources::attachRasterInMainThread(
@@ -1428,6 +1468,76 @@ void GodotPrepareRendererResources::attachRasterInMainThread(
     const CesiumRasterOverlays::RasterOverlayTile &rasterTile, void *pMainThreadRendererResources,
     const glm::dvec2 &translation, const glm::dvec2 &scale )
 {
+    const Cesium3DTilesSelection::TileContent &content = tile.getContent();
+    const Cesium3DTilesSelection::TileRenderContent *pRenderContent = content.getRenderContent();
+    if ( !pRenderContent )
+    {
+        return;
+    }
+    CesiumGltfNode *pCesiumGltfObject =
+        static_cast<CesiumGltfNode *>( pRenderContent->getRenderResources() );
+    GodotTextureWrapper *pTextureWrapper =
+        static_cast<GodotTextureWrapper *>( pMainThreadRendererResources );
+
+    if ( !pCesiumGltfObject || pCesiumGltfObject->pNodes.empty() || !pTextureWrapper )
+    {
+        return;
+    }
+
+    std::string key = rasterTile.getOverlay().getName();
+    uint32_t primitiveIndex = 0;
+    std::vector<MeshInstance3D *> nodes = pCesiumGltfObject->pNodes;
+    std::vector<CesiumPrimitiveInfo> primitiveInfos = pCesiumGltfObject->primitiveInfos;
+    for ( int32_t i = 0, len = nodes.size(); i < len; ++i )
+    {
+        Transform3D transform = nodes[i]->get_transform();
+        const CesiumPrimitiveInfo &primitiveInfo = primitiveInfos[primitiveIndex++];
+        // Note: The overlay texture coordinate index corresponds to the glTF
+        // attribute _CESIUMOVERLAY_<i>. Here we retrieve the godot texture
+        // coordinate index corresponding to the glTF texture coordinate index for
+        // this primitive.
+        auto texCoordIndexIt =
+            primitiveInfo.rasterOverlayUvIndexMap.find( overlayTextureCoordinateID );
+        if ( texCoordIndexIt == primitiveInfo.rasterOverlayUvIndexMap.end() )
+        {
+            // The associated UV coords for this overlay are missing.
+            continue;
+        }
+        // Ref<godot::ShaderMaterial> material = nodes[i]->get_material_overlay();
+        // Note: The overlay index is NOT the same as the overlay texture coordinate
+        // index. For instance, multiple overlays could point to the same overlay UV
+        // index - multiple overlays can use the _CESIUMOVERLAY_0 attribute for
+        // example. The _CESIUMOVERLAY_<i> attributes correspond to unique
+        // _projections_, not unique overlays.
+        Ref<StandardMaterial3D> material = nodes[i]->get_material_override();
+        if ( !material.is_valid() )
+        {
+            continue;
+        }
+        material->set_texture( StandardMaterial3D::TextureParam::TEXTURE_ALBEDO, pTextureWrapper->texture );
+
+
+        // std::optional<std::string> uniformID =
+        //     this->_materialProperties.getOverlayTextureCoordinateIndexID( key );
+        // if ( uniformID )
+        // {
+        //     material->set_shader_parameter( StringName( uniformID.value().c_str() ),
+        //                                     static_cast<float>( texCoordIndexIt->second ) );
+        // }
+        // uniformID = this->_materialProperties.getOverlayTextureID( key );
+        // if ( uniformID )
+        // {
+        //     material->set_shader_parameter( StringName( uniformID.value().c_str() ),
+        //                                     pTextureWrapper->texture );
+        // }
+        // uniformID = this->_materialProperties.getOverlayTranslationAndScaleID( key );
+        // if ( uniformID )
+        // {
+        //     material->set_shader_parameter( StringName( uniformID.value().c_str() ),
+        //                                     Vector3( translation.x, translation.y, 0 ) );
+        // }
+    }
+    
 }
 
 void GodotPrepareRendererResources::detachRasterInMainThread(
@@ -1435,4 +1545,19 @@ void GodotPrepareRendererResources::detachRasterInMainThread(
     const CesiumRasterOverlays::RasterOverlayTile &rasterTile,
     void *pMainThreadRendererResources ) noexcept
 {
+    /*
+    const Cesium3DTilesSelection::TileContent &content = tile.getContent();
+    const Cesium3DTilesSelection::TileRenderContent *pRenderContent = content.getRenderContent();
+    if ( !pRenderContent )
+    {
+        return;
+    }
+    CesiumGltfNode *pCesiumGltfObject =
+        static_cast<CesiumGltfNode *>( pRenderContent->getRenderResources() );
+    ImageTexture *pTexture = static_cast<ImageTexture *>( pMainThreadRendererResources );
+    if ( !pCesiumGltfObject || pCesiumGltfObject->pNodes.empty() || !pTexture )
+    {
+        return;
+    }
+    */
 }

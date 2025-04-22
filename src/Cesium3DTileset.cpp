@@ -3,6 +3,7 @@
 #include "GodotPrepareRendererResources.h"
 #include "GodotTilesetExternals.h"
 
+#include <Cesium3DTilesSelection/EllipsoidTilesetLoader.h>
 #include <Cesium3DTilesSelection/Tileset.h>
 #include <CesiumGeospatial/GlobeTransforms.h>
 
@@ -22,9 +23,22 @@ using namespace Cesium3DTilesSelection;
 
 void Cesium3DTileset::_bind_methods()
 {
+    ClassDB::bind_method( D_METHOD( "get_tileset_source" ), &Cesium3DTileset::get_tileset_source );
+    ClassDB::bind_method( D_METHOD( "set_tileset_source", "p_tileset_source" ),
+                          &Cesium3DTileset::set_tileset_source );
+    ADD_PROPERTY( PropertyInfo( Variant::INT, "tileset_source", PROPERTY_HINT_ENUM,
+                                "FromUrl, FromEllipsoid" ),
+                  "set_tileset_source", "get_tileset_source" );
+
     ClassDB::bind_method( D_METHOD( "get_url" ), &Cesium3DTileset::get_url );
     ClassDB::bind_method( D_METHOD( "set_url", "p_url" ), &Cesium3DTileset::set_url );
     ADD_PROPERTY( PropertyInfo( Variant::STRING, "url" ), "set_url", "get_url" );
+
+    // ClassDB::bind_method( D_METHOD( "get_test_array" ), &Cesium3DTileset::get_test_array );
+    // ClassDB::bind_method( D_METHOD( "set_test_array", "p_test_array" ),
+    //                       &Cesium3DTileset::set_test_array );
+    // ADD_PROPERTY( PropertyInfo( Variant::ARRAY, "test_array", PROPERTY_HINT_ARRAY_TYPE ),
+    //               "set_test_array", "get_test_array" );
 
     ClassDB::bind_method( D_METHOD( "get_maximum_screen_space_error" ),
                           &Cesium3DTileset::get_maximum_screen_space_error );
@@ -127,9 +141,20 @@ void Cesium3DTileset::_bind_methods()
     ADD_PROPERTY( PropertyInfo( Variant::BOOL, "generate smooth normals" ),
                   "set_generate_smooth_normals", "get_generate_smooth_normals" );
 
-    ClassDB::bind_method( D_METHOD( "get_log_selection_stats" ), &Cesium3DTileset::get_log_selection_stats );
-    ClassDB::bind_method( D_METHOD( "set_log_selection_stats", "p_log_selection_stats" ), &Cesium3DTileset::set_log_selection_stats );
-    ADD_PROPERTY( PropertyInfo( Variant::BOOL, "log selection stats"), "set_log_selection_stats", "get_log_selection_stats" );
+    ClassDB::bind_method( D_METHOD( "get_log_selection_stats" ),
+                          &Cesium3DTileset::get_log_selection_stats );
+    ClassDB::bind_method( D_METHOD( "set_log_selection_stats", "p_log_selection_stats" ),
+                          &Cesium3DTileset::set_log_selection_stats );
+    ADD_PROPERTY( PropertyInfo( Variant::BOOL, "log selection stats" ), "set_log_selection_stats",
+                  "get_log_selection_stats" );
+
+    ClassDB::bind_method( D_METHOD( "get_imagery_provider" ),
+                          &Cesium3DTileset::get_imagery_provider );
+    ClassDB::bind_method( D_METHOD( "set_imagery_provider", "p_imagery_provider" ),
+                          &Cesium3DTileset::set_imagery_provider );
+    ADD_PROPERTY( PropertyInfo( Variant::OBJECT, "imagery_provider", PROPERTY_HINT_RESOURCE_TYPE,
+                                "GTileMapServiceRasterOverlay,GDebugColorizeTilesRasterOverlay" ),
+                  "set_imagery_provider", "get_imagery_provider" );
 
     ClassDB::bind_method( D_METHOD( "load_tileset" ), &Cesium3DTileset::load_tileset );
     ClassDB::bind_method( D_METHOD( "focus_tileset" ), &Cesium3DTileset::focus_tileset );
@@ -140,17 +165,21 @@ void Cesium3DTileset::_bind_methods()
 }
 
 Cesium3DTileset::Cesium3DTileset() :
-    p_tileset( nullptr ), url( "" ), maximum_screen_space_error( 16.0f ), preload_ancestors( true ),
-    preload_siblings( true ), forbid_holes( true ), maximum_simultaneous_tile_loads( 20 ),
-    maximum_cached_mbytes( 512 ), loading_descendant_limit( 20 ), enable_frustum_culling( true ),
-    enable_fog_culling( true ), enforce_culled_screen_space_error( true ),
-    culled_screen_space_error( 64.0f ), suspend_update( false ), create_physics_meshes( true ),
-    generate_smooth_normals( false ), log_selection_stats( false ), last_opaque_material_hash( 0 ),
-    load_progress( 0.0f ), active_loading( false ), tiles_destroyed(false)
+    p_tileset( nullptr ), tileset_source( TilesetSource::FromUrl ), url( "" ),
+    maximum_screen_space_error( 16.0f ), preload_ancestors( true ), preload_siblings( true ),
+    forbid_holes( true ), maximum_simultaneous_tile_loads( 20 ), maximum_cached_mbytes( 512 ),
+    loading_descendant_limit( 20 ), enable_frustum_culling( true ), enable_fog_culling( true ),
+    enforce_culled_screen_space_error( true ), culled_screen_space_error( 64.0f ),
+    suspend_update( false ), create_physics_meshes( true ), generate_smooth_normals( false ),
+    log_selection_stats( false ), last_opaque_material_hash( 0 ), load_progress( 0.0f ),
+    active_loading( false )
 {
 }
 
-Cesium3DTileset::~Cesium3DTileset(){}
+Cesium3DTileset::~Cesium3DTileset()
+{
+    this->destroy_tileset();
+}
 
 const CesiumGeoreference *Cesium3DTileset::resolve_georeference() const
 {
@@ -226,22 +255,46 @@ void Cesium3DTileset::load_tileset()
     {
         return;
     }
+    CesiumGeospatial::Ellipsoid p_native_ellipsoid =
+        georeference->get_ellipsoid()->get_native_ellipsoid();
+    options.ellipsoid = p_native_ellipsoid;
+
     this->last_update_result = ViewUpdateResult();
+
     std::string url_( url.utf8().get_data() );
-    if (url_.empty()) {
-        return;
+    switch ( tileset_source )
+    {
+        case TilesetSource::FromUrl:
+            UtilityFunctions::print( "Load tileset from url: ", url );
+            this->p_tileset =
+                std::make_unique<Tileset>( createTilesetExternals( this ), url_, options );
+            break;
+        case TilesetSource::FromEllipsoid:
+            UtilityFunctions::print( "Load tileset from ellipsoid" );
+            this->p_tileset = Cesium3DTilesSelection::EllipsoidTilesetLoader::createTileset(
+                createTilesetExternals( this ), options );
+            break;
     }
-    UtilityFunctions::print( "Load tileset from url: ", url );
-    this->p_tileset = std::make_unique<Tileset>( createTilesetExternals( this ), url_, options );
+
+    if ( this->imagery_provider.is_valid() )
+    {
+        Ref<ImageryProvider> overlay = Ref<ImageryProvider>( imagery_provider.ptr() );
+        if ( overlay.is_valid() )
+        {
+            overlay->addToTileset( this->p_tileset.get() );
+            this->update_overlay_material_keys();
+        }
+    }
 }
 
 void Cesium3DTileset::destroy_tileset()
 {
     if ( !this->p_tileset )
     {
-        UtilityFunctions::print("Tileset already destroyed or not initialized");
         return;
     }
+    UtilityFunctions::print( "Destory tileset" );
+    this->destroy_imagery_provider();
     this->p_tileset.reset();
 }
 
@@ -451,22 +504,25 @@ void Cesium3DTileset::update_last_view_update_result_state(
     }
 }
 
-void Cesium3DTileset::_notification( int p_what )
+void Cesium3DTileset::update_overlay_material_keys()
 {
-    switch ( p_what )
+    if ( !this->p_tileset || !this->p_tileset->getExternals().pPrepareRendererResources )
     {
-        case NOTIFICATION_READY:
-            set_process( true );
-            break;
-        case NOTIFICATION_PROCESS:
-            update( get_process_delta_time() );
-            break;
-        case NOTIFICATION_PREDELETE:
-            // UtilityFunctions::print("Cesium3DTileset is being deleted");
-            tiles_destroyed = true;
-            call_deferred("destroy_tileset"); // 延迟销毁资源
-            break;
+        return;
     }
+
+    std::vector<std::string> overlay_material_keys{
+        imagery_provider->get_material_key().utf8().get_data()
+    };
+    GodotPrepareRendererResources *pRendererResources =
+        static_cast<GodotPrepareRendererResources *>(
+            p_tileset->getExternals().pPrepareRendererResources.get() );
+    pRendererResources->getMaterialProperties().updateOverlayParameterIDs( overlay_material_keys );
+}
+
+void Cesium3DTileset::_process( double delta )
+{
+    this->update( delta );
 }
 
 void Cesium3DTileset::update( double delta )
@@ -537,11 +593,39 @@ void Cesium3DTileset::update( double delta )
     this->update_load_status();
 }
 
+void Cesium3DTileset::set_tileset_source( const TilesetSource p_tileset_source )
+{
+    if ( tileset_source != p_tileset_source )
+    {
+        tileset_source = p_tileset_source;
+        if ( tileset_source == TilesetSource::FromEllipsoid )
+        {
+            // TODO: disable url property and enable imagery_provider property
+        }
+    }
+}
+
+TilesetSource Cesium3DTileset::get_tileset_source()
+{
+    return tileset_source;
+}
+
+TypedArray<ImageryProvider> Cesium3DTileset::get_test_array()
+{
+    return test_array;
+}
+
+void Cesium3DTileset::set_test_array( TypedArray<ImageryProvider> p_test_array )
+{
+    test_array = p_test_array;
+}
+
 void Cesium3DTileset::set_url( const String p_url )
 {
     if ( url != p_url )
     {
         url = p_url;
+        UtilityFunctions::print( "set_url->", url );
         this->destroy_tileset();
     }
 }
@@ -730,4 +814,26 @@ void Cesium3DTileset::set_log_selection_stats( const bool p_log_selection_stats 
 bool Cesium3DTileset::get_log_selection_stats() const
 {
     return this->log_selection_stats;
+}
+
+Ref<ImageryProvider> Cesium3DTileset::get_imagery_provider() const
+{
+    return this->imagery_provider;
+}
+
+void Cesium3DTileset::set_imagery_provider( const Ref<ImageryProvider> p_imagery_provider )
+{
+    if ( this->imagery_provider != p_imagery_provider )
+    {
+        this->imagery_provider = p_imagery_provider;
+        this->destroy_tileset();
+    }
+}
+
+void Cesium3DTileset::destroy_imagery_provider()
+{
+    if ( this->imagery_provider.is_valid() && this->p_tileset )
+    {
+        imagery_provider->removeFromTileset( this->p_tileset.get() );
+    }
 }

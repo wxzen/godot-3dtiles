@@ -61,6 +61,7 @@ namespace CesiumForGodot
 
     const std::shared_ptr<CreditSystem> &getOrCreateCreditSystem( Cesium3DTileset *tileset )
     {
+        // todo
         return pCreditSystem;
     }
 
@@ -68,7 +69,7 @@ namespace CesiumForGodot
     {
         return TilesetExternals{ getAssetAccessor(),
                                  std::make_shared<GodotPrepareRendererResources>( tileset ),
-                                 AsyncSystem( getTaskProcessor() ),
+                                 getAsyncSystem(),
                                  getOrCreateCreditSystem( tileset ), spdlog::default_logger() };
     }
 

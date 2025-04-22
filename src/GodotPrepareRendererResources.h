@@ -2,10 +2,12 @@
 #define GODOT_PREPARE_RENDERER_RESOURCES_H
 
 #include "Cesium3DTileset.h"
+#include "TilesetMaterialProperties.h"
 #include <Cesium3DTilesSelection/IPrepareRendererResources.h>
 #include <Cesium3DTilesSelection/Tile.h>
 #include <Cesium3DTilesSelection/Tileset.h>
 #include <CesiumGeometry/Transforms.h>
+#include <CesiumGeospatial/Ellipsoid.h>
 #include <CesiumGltf/AccessorView.h>
 #include <CesiumGltf/ExtensionExtMeshFeatures.h>
 #include <CesiumGltf/ExtensionKhrMaterialsUnlit.h>
@@ -21,7 +23,6 @@
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <godot_cpp/classes/array_mesh.hpp>
-#include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/random_number_generator.hpp>
@@ -136,7 +137,6 @@ namespace CesiumForGodot
         }
 
         bool visible = false;
-        bool isFreed = false;
     };
 
     class GodotPrepareRendererResources : public Cesium3DTilesSelection::IPrepareRendererResources
@@ -177,8 +177,14 @@ namespace CesiumForGodot
             const CesiumRasterOverlays::RasterOverlayTile &rasterTile,
             void *pMainThreadRendererResources ) noexcept override;
 
+        TilesetMaterialProperties &getMaterialProperties()
+        {
+            return this->_materialProperties;
+        }
+
     private:
-        Cesium3DTileset *_tileset;
+        Cesium3DTileset *_tileset; // must be Node3D or add_child may not works
+        TilesetMaterialProperties _materialProperties;
     };
 
     template <typename TIndex>
@@ -197,6 +203,11 @@ namespace CesiumForGodot
             const glm::vec3 &v2 = *reinterpret_cast<const glm::vec3 *>( &positionView[i2] );
 
             glm::vec3 normal = glm::normalize( glm::cross( v1 - v0, v2 - v0 ) );
+            // 转换法线坐标系
+           /* glm::vec3 normal = glm::normalize(glm::cross(
+                glm::vec3(v1.x, v1.z, -v1.y) - glm::vec3(v0.x, v0.z, -v0.y),
+                glm::vec3(v2.x, v2.z, -v2.y) - glm::vec3(v0.x, v0.z, -v0.y)
+            ));*/
             for ( int j = 0; j < 3; j++ )
             {
                 *reinterpret_cast<glm::vec3 *>( pWritePos ) = normal;

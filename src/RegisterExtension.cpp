@@ -1,6 +1,7 @@
 // Copied from godot-cpp/test/src and modified.
 
 #include "gdextension_interface.h"
+
 #include "godot_cpp/core/class_db.hpp"
 #include "godot_cpp/core/defs.hpp"
 #include "godot_cpp/godot.hpp"
@@ -8,7 +9,9 @@
 #include "Cesium.h"
 #include "Cesium3DTileset.h"
 #include "CesiumGeoreference.h"
+#include "CesiumImageryProvider.h"
 #include "CesiumOriginAuthority.h"
+#include "Example.h"
 #include <Cesium3DTilesContent/registerAllTileContentTypes.h>
 
 /// @file
@@ -30,10 +33,19 @@ namespace
             return;
         }
 
+        godot::ClassDB::register_class<ExampleRef>();
+        godot::ClassDB::register_class<ExampleMin>();
+        godot::ClassDB::register_class<Example>();
+        godot::ClassDB::register_class<ExampleVirtual>( true );
+        godot::ClassDB::register_abstract_class<ExampleAbstract>();
+
         godot::ClassDB::register_class<Cesium>();
         godot::ClassDB::register_class<LongitudeLatitudeHeight>();
         godot::ClassDB::register_class<EarthCenteredEarthFixed>();
         godot::ClassDB::register_class<CesiumGeoreference>();
+        godot::ClassDB::register_class<ImageryProvider>();
+        godot::ClassDB::register_class<GTileMapServiceRasterOverlay>();
+        godot::ClassDB::register_class<GDebugColorizeTilesRasterOverlay>();
         godot::ClassDB::register_class<Cesium3DTileset>();
 
         Cesium3DTilesContent::registerAllTileContentTypes();

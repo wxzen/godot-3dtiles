@@ -35,6 +35,8 @@ CesiumGeoreference::CesiumGeoreference() :
     origin_authority_name( "" ), scale( 1.0f ), localToEcef( glm::dmat4( 1.0f ) ),
     ecefToLocal( glm::dmat4( 1.0f ) ), coordinate_system()
 {
+    ellipsoid =
+        GCesiumEllipsoid::create( Vector3( 6378137.0f, 6378137.0f, 6356752.3142451793f ) ); // WGS84
 }
 
 CesiumGeoreference::~CesiumGeoreference()
@@ -90,6 +92,10 @@ void CesiumGeoreference::set_scale( const double p_scale )
     if ( scale != p_scale )
     {
         scale = p_scale;
+         if ( scale < 1e-8 )
+         {
+             scale = 1e-8;
+         }
         emit_signal( "scale_changed" );
         if ( origin_authority.is_valid() )
         {
@@ -105,6 +111,7 @@ double CesiumGeoreference::get_scale() const
 
 LocalHorizontalCoordinateSystem CesiumGeoreference::createCoordinateSystem()
 {
+    double scaleToMeters = 1 / scale;
     if ( origin_authority.is_valid() )
     {
         Ref<LongitudeLatitudeHeight> lngLatH =
@@ -115,7 +122,8 @@ LocalHorizontalCoordinateSystem CesiumGeoreference::createCoordinateSystem()
             return LocalHorizontalCoordinateSystem(
                 Cartographic::fromDegrees( lngLatH->get_longitude(), lngLatH->get_latitude(),
                                            lngLatH->get_height() ),
-                LocalDirection::East, LocalDirection::Up, LocalDirection::South, 1.0 / scale );
+                LocalDirection::East, LocalDirection::Up, LocalDirection::South, scaleToMeters,
+                ellipsoid->get_native_ellipsoid() );
         }
         else
         {
@@ -124,7 +132,8 @@ LocalHorizontalCoordinateSystem CesiumGeoreference::createCoordinateSystem()
                 Ref<EarthCenteredEarthFixed>( origin_authority.ptr() );
             return LocalHorizontalCoordinateSystem(
                 glm::dvec3( p_ecef->get_ecefX(), p_ecef->get_ecefY(), p_ecef->get_ecefZ() ),
-                LocalDirection::East, LocalDirection::Up, LocalDirection::South, 1.0 / scale );
+                LocalDirection::East, LocalDirection::Up, LocalDirection::South, scaleToMeters,
+                ellipsoid->get_native_ellipsoid() );
         }
     }
 }
@@ -148,4 +157,21 @@ void CesiumGeoreference::computeLocalToEarthCenteredEarthFixedTransformation()
 void CesiumGeoreference::updateGeoreference()
 {
     this->computeLocalToEarthCenteredEarthFixedTransformation();
+}
+
+GCesiumEllipsoid *CesiumGeoreference::get_ellipsoid() const
+{
+    return ellipsoid;
+}
+
+void CesiumGeoreference::set_ellipsoid( GCesiumEllipsoid *p_ellipsoid )
+{
+    if ( ellipsoid != p_ellipsoid )
+    {
+        ellipsoid = p_ellipsoid;
+        if ( origin_authority.is_valid() )
+        {
+            this->updateGeoreference();
+        }
+    }
 }
